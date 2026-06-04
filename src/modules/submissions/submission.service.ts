@@ -1,4 +1,5 @@
 import prisma from "../../config/prisma";
+import { postAi } from "../../services/aiService";
 
 type SubmitTaskPayload = {
   taskTitle: string;
@@ -9,6 +10,34 @@ type SubmitTaskPayload = {
   fileName?: string | null;
   fileMimeType?: string | null;
   fileSize?: number | null;
+};
+
+type AiEvaluateTaskResponse = {
+  task_id: string;
+  score: number | null;
+  status: string;
+  feedback?: string[];
+  positive_feedback?: string[];
+  revision_feedback?: string[];
+  validated_skill?: string;
+  target_role?: string;
+  score_format?: unknown[];
+  dimension_scores?: unknown[];
+  criteria_results?: unknown[];
+  skill_updates?: unknown[];
+};
+
+type NormalizedEvaluation = {
+  source: "ai" | "local";
+  status: "passed" | "revision";
+  score: number;
+  strengths: string[];
+  weaknesses: string[];
+  suggestions: string[];
+  xpEarned: number;
+  rawScore: number;
+  isPassed: boolean;
+  aiResult?: AiEvaluateTaskResponse | null;
 };
 
 const parseJsonText = (value: string | null | undefined) => {
@@ -62,9 +91,7 @@ const getFileScore = (
     lowerName.endsWith(".rar") ||
     lowerName.endsWith(".7z");
 
-  const isPdf =
-    mime === "application/pdf" ||
-    lowerName.endsWith(".pdf");
+  const isPdf = mime === "application/pdf" || lowerName.endsWith(".pdf");
 
   const isText =
     mime === "text/plain" ||
@@ -265,14 +292,122 @@ const buildFeedbackContent = (
   };
 };
 
+const normalizeAiEvaluation = (
+  aiResult: AiEvaluateTaskResponse
+): NormalizedEvaluation => {
+  if (
+    aiResult.score === null ||
+    aiResult.status === "no_rubric_for_task" ||
+    aiResult.status === "no_rubric"
+  ) {
+    throw new Error(
+      `AI tidak menemukan rubric untuk task_id: ${aiResult.task_id}`
+    );
+  }
+
+  const score = Math.round(aiResult.score || 0);
+  const isPassed = aiResult.status === "passed" || score >= 80;
+  const status: "passed" | "revision" = isPassed ? "passed" : "revision";
+
+  const strengths =
+    aiResult.positive_feedback && aiResult.positive_feedback.length > 0
+      ? aiResult.positive_feedback
+      : aiResult.feedback && aiResult.feedback.length > 0
+      ? aiResult.feedback
+      : ["Submission berhasil diterima dan sudah dievaluasi oleh AI."];
+
+  const weaknesses =
+    aiResult.revision_feedback && aiResult.revision_feedback.length > 0
+      ? aiResult.revision_feedback
+      : status === "passed"
+      ? ["Tidak ada kekurangan besar berdasarkan rubric AI."]
+      : ["Beberapa kriteria task belum terpenuhi berdasarkan evaluasi AI."];
+
+  const suggestions =
+    status === "passed"
+      ? [
+          "Lanjutkan ke task berikutnya di action plan.",
+          "Simpan hasil pekerjaan ini sebagai bukti portofolio.",
+          aiResult.validated_skill
+            ? `Skill ${aiResult.validated_skill} sudah mulai tervalidasi.`
+            : "Pertahankan kualitas pengerjaan task berikutnya.",
+        ]
+      : [
+          "Perbaiki bagian yang belum memenuhi kriteria.",
+          "Lengkapi bukti hasil seperti screenshot, link, atau file project.",
+          "Submit ulang setelah revisi selesai.",
+        ];
+
+  return {
+    source: "ai",
+    status,
+    score,
+    strengths,
+    weaknesses,
+    suggestions,
+    xpEarned: status === "passed" ? 120 : 60,
+    rawScore: score,
+    isPassed,
+    aiResult,
+  };
+};
+
+const buildLocalEvaluation = (
+  content: string,
+  taskTitle: string,
+  fileName?: string | null,
+  fileMimeType?: string | null,
+  fileSize?: number | null
+): NormalizedEvaluation & {
+  wordCount: number;
+  fileType: string;
+  fileLabel: string;
+  fileReason: string;
+  fileScore: number;
+} => {
+  const result = determineSubmissionResult(
+    content,
+    taskTitle,
+    fileName,
+    fileMimeType,
+    fileSize
+  );
+
+  const feedbackContent = buildFeedbackContent(
+    result.isPassed,
+    taskTitle,
+    result.score,
+    result.fileLabel,
+    result.fileReason,
+    result.fileType
+  );
+
+  return {
+    source: "local",
+    status: result.status,
+    score: feedbackContent.score,
+    strengths: feedbackContent.strengths,
+    weaknesses: feedbackContent.weaknesses,
+    suggestions: feedbackContent.suggestions,
+    xpEarned: result.xpEarned,
+    rawScore: result.finalScore,
+    isPassed: result.isPassed,
+    aiResult: null,
+    wordCount: result.wordCount,
+    fileType: result.fileType,
+    fileLabel: result.fileLabel,
+    fileReason: result.fileReason,
+    fileScore: result.fileScore,
+  };
+};
+
 export class SubmissionService {
   static async submitTask(userId: string, payload: SubmitTaskPayload) {
     const taskTitle = payload.taskTitle || "Task Belajar";
     const targetRole = payload.targetRole || "General";
 
     const taskDescription =
-      payload.taskDescription ||
-      "Task dibuat otomatis dari action plan user.";
+      payload.taskDescription || "Task dibuat otomatis dari action plan user.";
 
     const hasUploadedFile = Boolean(payload.fileUrl);
 
@@ -285,23 +420,6 @@ export class SubmissionService {
     if (!content && !hasUploadedFile) {
       throw new Error("Content atau file wajib diisi");
     }
-
-    const result = determineSubmissionResult(
-      content,
-      taskTitle,
-      payload.fileName,
-      payload.fileMimeType,
-      payload.fileSize
-    );
-
-    const feedbackContent = buildFeedbackContent(
-      result.isPassed,
-      taskTitle,
-      result.score,
-      result.fileLabel,
-      result.fileReason,
-      result.fileType
-    );
 
     let task = await prisma.tasks.findFirst({
       where: {
@@ -323,12 +441,53 @@ export class SubmissionService {
       });
     }
 
+    const localEvaluation = buildLocalEvaluation(
+      content,
+      taskTitle,
+      payload.fileName,
+      payload.fileMimeType,
+      payload.fileSize
+    );
+
+    let evaluation: NormalizedEvaluation = localEvaluation;
+
+    if (task.ai_task_id) {
+      try {
+        const submissionFiles = payload.fileName
+          ? [payload.fileName]
+          : payload.fileUrl
+          ? [payload.fileUrl]
+          : [];
+
+        const aiResult = await postAi<AiEvaluateTaskResponse>(
+          "/evaluate-task",
+          {
+            task_id: task.ai_task_id,
+            submission_text: [
+              `Task: ${task.title}`,
+              `Deskripsi task: ${task.description}`,
+              content ? `Catatan user: ${content}` : "",
+              payload.fileName ? `File dikirim: ${payload.fileName}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            submission_files: submissionFiles,
+          }
+        );
+
+        evaluation = normalizeAiEvaluation(aiResult);
+      } catch (error) {
+        console.error("AI evaluate-task failed, using local fallback:", error);
+        evaluation = localEvaluation;
+      }
+    }
+
     const submission = await prisma.submissions.create({
       data: {
         user_id: userId,
         task_id: task.id,
         content,
-        status: result.status,
+        status: evaluation.status,
         file_url: payload.fileUrl || null,
         file_name: payload.fileName || null,
       },
@@ -340,10 +499,10 @@ export class SubmissionService {
     const feedback = await prisma.feedback.create({
       data: {
         submission_id: submission.id,
-        strengths: stringifyList(feedbackContent.strengths),
-        weaknesses: stringifyList(feedbackContent.weaknesses),
-        suggestions: stringifyList(feedbackContent.suggestions),
-        score: feedbackContent.score,
+        strengths: stringifyList(evaluation.strengths),
+        weaknesses: stringifyList(evaluation.weaknesses),
+        suggestions: stringifyList(evaluation.suggestions),
+        score: evaluation.score,
       },
     });
 
@@ -391,9 +550,7 @@ export class SubmissionService {
     const completedTasks = passedTaskTitles.size;
 
     const progressPercentage =
-      totalTasks > 0
-        ? Math.round((completedTasks / totalTasks) * 100)
-        : 0;
+      totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
     await prisma.progress.upsert({
       where: {
@@ -431,17 +588,20 @@ export class SubmissionService {
         weaknesses: parseJsonText(feedback.weaknesses),
         suggestions: parseJsonText(feedback.suggestions),
         score: feedback.score,
-        xpEarned: result.xpEarned,
+        xpEarned: evaluation.xpEarned,
         createdAt: feedback.created_at,
       },
       evaluation: {
-        wordCount: result.wordCount,
-        rawScore: result.finalScore,
-        isPassed: result.isPassed,
-        fileType: result.fileType,
-        fileLabel: result.fileLabel,
-        fileReason: result.fileReason,
-        fileScore: result.fileScore,
+        source: evaluation.source,
+        wordCount: countWords(content),
+        rawScore: evaluation.rawScore,
+        isPassed: evaluation.isPassed,
+        fileType: localEvaluation.fileType,
+        fileLabel: localEvaluation.fileLabel,
+        fileReason: localEvaluation.fileReason,
+        fileScore: localEvaluation.fileScore,
+        aiTaskId: task.ai_task_id,
+        aiResult: evaluation.aiResult,
       },
       progress: {
         completedTasks,
