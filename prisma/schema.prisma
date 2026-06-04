@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url = env("DATABASE_URL")
+}
+
+model action_plan_steps {
+  id             String       @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  action_plan_id String       @db.Char(36)
+  task_id        String       @db.Char(36)
+  step_order     Int
+  is_completed   Boolean?     @default(false)
+  created_at     DateTime     @default(now()) @db.Timestamp(0)
+  action_plans   action_plans @relation(fields: [action_plan_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_action_plan_steps_plan")
+  tasks          tasks        @relation(fields: [task_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_action_plan_steps_task")
+
+  @@index([action_plan_id], map: "idx_action_plan_steps_plan_id")
+  @@index([task_id], map: "idx_action_plan_steps_task_id")
+}
+
+model action_plans {
+  id                        String               @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  user_id                   String               @db.Char(36)
+  generated_from_context_id String?              @db.Char(36)
+  target_role               String?              @db.VarChar(100)
+  title                     String?              @db.VarChar(255)
+  status                    action_plans_status? @default(active)
+  created_at                DateTime             @default(now()) @db.Timestamp(0)
+  action_plan_steps         action_plan_steps[]
+  user_context              user_context?        @relation(fields: [generated_from_context_id], references: [id], onUpdate: Restrict, map: "fk_action_plans_context")
+  users                     users                @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_action_plans_user")
+
+  @@index([generated_from_context_id], map: "fk_action_plans_context")
+  @@index([user_id], map: "idx_action_plans_user_id")
+}
+
+model assessments {
+  id         String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  user_id    String   @db.Char(36)
+  question   String   @db.Text
+  answer     String?  @db.Text
+  created_at DateTime @default(now()) @db.Timestamp(0)
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_assessments_user")
+
+  @@index([user_id], map: "idx_assessments_user_id")
+}
+
+model feedback {
+  id            String      @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  submission_id String      @unique(map: "submission_id") @db.Char(36)
+  strengths     String?     @db.Text
+  weaknesses    String?     @db.Text
+  suggestions   String?     @db.Text
+  score         Float?      @db.Float
+  created_at    DateTime    @default(now()) @db.Timestamp(0)
+  submissions   submissions @relation(fields: [submission_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_feedback_submission")
+}
+
+model progress {
+  id                  String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  user_id             String   @unique(map: "user_id") @db.Char(36)
+  completed_tasks     Int?     @default(0)
+  total_tasks         Int?     @default(0)
+  progress_percentage Float?   @default(0) @db.Float
+  last_updated        DateTime @default(now()) @db.Timestamp(0)
+  users               users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_progress_user")
+}
+
+model skills {
+  id         String       @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  role       String       @db.VarChar(100)
+  skill_name String       @db.VarChar(150)
+  level      skills_level
+
+  @@index([role], map: "idx_skills_role")
+}
+
+model submissions {
+  id         String              @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  user_id    String              @db.Char(36)
+  task_id    String              @db.Char(36)
+  content    String              @db.Text
+  status     submissions_status? @default(pending)
+  file_url   String?
+  file_name  String?
+  created_at DateTime            @default(now()) @db.Timestamp(0)
+  feedback   feedback?
+  tasks      tasks               @relation(fields: [task_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_submissions_task")
+  users      users               @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_submissions_user")
+
+  @@index([task_id], map: "idx_submissions_task_id")
+  @@index([user_id], map: "idx_submissions_user_id")
+}
+
+model tasks {
+  id                String              @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  role              String              @db.VarChar(100)
+  title             String              @db.VarChar(255)
+  description       String              @db.Text
+  expected_output   String?             @db.Text
+  difficulty        tasks_difficulty?   @default(basic)
+  created_at        DateTime            @default(now()) @db.Timestamp(0)
+  action_plan_steps action_plan_steps[]
+  submissions       submissions[]
+
+  @@index([role], map: "idx_tasks_role")
+}
+
+model user_context {
+  id                 String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  user_id            String         @db.Char(36)
+  target_role        String?        @db.VarChar(100)
+  problem_category   String?        @db.VarChar(100)
+  confidence_score   Float?         @db.Float
+  extracted_keywords String?        @db.LongText
+  created_at         DateTime       @default(now()) @db.Timestamp(0)
+  action_plans       action_plans[]
+  users              users          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_user_context_user")
+
+  @@index([user_id], map: "idx_user_context_user_id")
+}
+
+model users {
+  id           String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  email        String         @unique(map: "email") @db.VarChar(255)
+  password     String         @db.VarChar(255)
+  role         users_role?    @default(user)
+
+  is_assessment_done Boolean @default(false)
+  avatar_url   String?
+  created_at   DateTime       @default(now()) @db.Timestamp(0)
+
+  action_plans action_plans[]
+  assessments  assessments[]
+  progress     progress?
+  submissions  submissions[]
+  user_context user_context[]
+}
+
+enum skills_level {
+  basic
+  intermediate
+  advanced
+}
+
+enum users_role {
+  user
+  admin
+  guest
+}
+
+enum submissions_status {
+  pending
+  passed
+  revision
+}
+
+enum action_plans_status {
+  active
+  completed
+  archived
+}
+
+enum tasks_difficulty {
+  basic
+  intermediate
+  advanced
+}
