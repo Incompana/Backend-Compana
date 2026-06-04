@@ -10,6 +10,7 @@ import feedbackRouter from "../modules/feedback/feedback.route";
 import progressRouter from "../modules/progress/progress.route";
 import adminRouter from "../modules/admin/admin.route";
 import uploadRouter from "../modules/uploads/upload.route";
+import aiRouter from "./ai";
 
 import { authMiddleware } from "../middlewares/auth.middleware";
 
@@ -25,6 +26,7 @@ router.use("/feedback", feedbackRouter);
 router.use("/progress", progressRouter);
 router.use("/admin", adminRouter);
 router.use("/uploads", uploadRouter);
+router.use("/ai", aiRouter);
 
 
 
