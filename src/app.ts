@@ -20,6 +20,14 @@ app.use(urlencoded({ extended: true }));
 app.use(morgan('dev'));
 app.use(cookieParser());
 
+app.get('/', (req: Request, res: Response) => {
+    res.status(200).json({
+        status: "ok",
+        message: "Compana backend is running",
+        health: "/health"
+    })
+});
+
 app.get('/health', (req: Request, res: Response) => {
     res.status(200).json({
         status: "up",
