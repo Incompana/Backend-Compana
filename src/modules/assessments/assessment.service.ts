@@ -1,4 +1,5 @@
 import prisma from "../../config/prisma";
+import type { Prisma } from "@prisma/client";
 import {
   AssessmentPayload,
   AiQuestion,
@@ -309,168 +310,170 @@ export class AssessmentService {
 
       const result = convertAiResultToLegacyResult(data.targetRole, aiResult);
 
-      const savedResult = await prisma.$transaction(async (tx) => {
-        await tx.assessments.createMany({
-          data: data.answers.map((item) => ({
-            user_id: userId,
-            question: item.question,
-            answer: item.answer,
-          })),
-        });
+      const savedResult = await prisma.$transaction(
+        async (tx: Prisma.TransactionClient) => {
+          await tx.assessments.createMany({
+            data: data.answers.map((item) => ({
+              user_id: userId,
+              question: item.question,
+              answer: item.answer,
+            })),
+          });
 
-        const context = await tx.user_context.create({
-          data: {
-            user_id: userId,
-            target_role:
-              result.analysis.role || normalizeRoleToAi(data.targetRole),
-            problem_category:
-              result.analysis.problemCategory || "skill_gap",
-            confidence_score: result.analysis.confidence,
-            extracted_keywords: JSON.stringify(result.skillGap),
-          },
-        });
+          const context = await tx.user_context.create({
+            data: {
+              user_id: userId,
+              target_role:
+                result.analysis.role || normalizeRoleToAi(data.targetRole),
+              problem_category:
+                result.analysis.problemCategory || "skill_gap",
+              confidence_score: result.analysis.confidence,
+              extracted_keywords: JSON.stringify(result.skillGap),
+            },
+          });
 
-        const actionPlan = await tx.action_plans.create({
-          data: {
-            user_id: userId,
-            generated_from_context_id: context.id,
-            target_role:
-              result.analysis.role || normalizeRoleToAi(data.targetRole),
-            title: `Action Plan ${normalizeRoleLabel(data.targetRole)}`,
-            status: "active",
-          },
-        });
+          const actionPlan = await tx.action_plans.create({
+            data: {
+              user_id: userId,
+              generated_from_context_id: context.id,
+              target_role:
+                result.analysis.role || normalizeRoleToAi(data.targetRole),
+              title: `Action Plan ${normalizeRoleLabel(data.targetRole)}`,
+              status: "active",
+            },
+          });
 
-        const recommendedTasks =
-          aiResult.action_plan?.recommended_tasks || [];
+          const recommendedTasks =
+            aiResult.action_plan?.recommended_tasks || [];
 
-        if (recommendedTasks.length) {
-          for (let index = 0; index < recommendedTasks.length; index++) {
-            const aiTask = recommendedTasks[index];
+          if (recommendedTasks.length) {
+            for (let index = 0; index < recommendedTasks.length; index++) {
+              const aiTask = recommendedTasks[index];
 
-            let task = await tx.tasks.findFirst({
-              where: {
-                title: aiTask.task_title,
-                role: result.analysis.role || normalizeRoleToAi(data.targetRole),
-              },
-            });
-
-            if (task) {
-              task = await tx.tasks.update({
+              let task = await tx.tasks.findFirst({
                 where: {
-                  id: task.id,
-                },
-                data: {
-                  description:
-                    aiTask.task_description || task.description,
-                  expected_output:
-                    aiTask.output_format ||
-                    aiTask.assessment_checklist ||
-                    task.expected_output,
-                  difficulty:
-                    aiTask.difficulty === "advanced"
-                      ? "advanced"
-                      : aiTask.difficulty === "intermediate"
-                      ? "intermediate"
-                      : "basic",
-                  ai_task_id: aiTask.task_id,
+                  title: aiTask.task_title,
+                  role: result.analysis.role || normalizeRoleToAi(data.targetRole),
                 },
               });
-            } else {
-              task = await tx.tasks.create({
+
+              if (task) {
+                task = await tx.tasks.update({
+                  where: {
+                    id: task.id,
+                  },
+                  data: {
+                    description:
+                      aiTask.task_description || task.description,
+                    expected_output:
+                      aiTask.output_format ||
+                      aiTask.assessment_checklist ||
+                      task.expected_output,
+                    difficulty:
+                      aiTask.difficulty === "advanced"
+                        ? "advanced"
+                        : aiTask.difficulty === "intermediate"
+                        ? "intermediate"
+                        : "basic",
+                    ai_task_id: aiTask.task_id,
+                  },
+                });
+              } else {
+                task = await tx.tasks.create({
+                  data: {
+                    role:
+                      result.analysis.role || normalizeRoleToAi(data.targetRole),
+                    title: aiTask.task_title,
+                    description:
+                      aiTask.task_description ||
+                      "Task dibuat otomatis dari rekomendasi AI.",
+                    expected_output:
+                      aiTask.output_format ||
+                      aiTask.assessment_checklist ||
+                      "File project, screenshot, link, atau catatan pengerjaan.",
+                    difficulty:
+                      aiTask.difficulty === "advanced"
+                        ? "advanced"
+                        : aiTask.difficulty === "intermediate"
+                        ? "intermediate"
+                        : "basic",
+                    ai_task_id: aiTask.task_id,
+                  },
+                });
+              }
+
+              await tx.action_plan_steps.create({
                 data: {
-                  role:
-                    result.analysis.role || normalizeRoleToAi(data.targetRole),
-                  title: aiTask.task_title,
-                  description:
-                    aiTask.task_description ||
-                    "Task dibuat otomatis dari rekomendasi AI.",
-                  expected_output:
-                    aiTask.output_format ||
-                    aiTask.assessment_checklist ||
-                    "File project, screenshot, link, atau catatan pengerjaan.",
-                  difficulty:
-                    aiTask.difficulty === "advanced"
-                      ? "advanced"
-                      : aiTask.difficulty === "intermediate"
-                      ? "intermediate"
-                      : "basic",
-                  ai_task_id: aiTask.task_id,
+                  action_plan_id: actionPlan.id,
+                  task_id: task.id,
+                  step_order: index + 1,
+                  is_completed: false,
                 },
               });
             }
+          } else {
+            for (let index = 0; index < result.recommendedTasks.length; index++) {
+              const taskTitle = result.recommendedTasks[index];
 
-            await tx.action_plan_steps.create({
-              data: {
-                action_plan_id: actionPlan.id,
-                task_id: task.id,
-                step_order: index + 1,
-                is_completed: false,
-              },
-            });
+              const task = await tx.tasks.create({
+                data: {
+                  role:
+                    result.analysis.role || normalizeRoleToAi(data.targetRole),
+                  title: taskTitle,
+                  description:
+                    "Task dibuat otomatis dari hasil assessment user.",
+                  expected_output:
+                    "Catatan belajar, screenshot, link project, file project, atau dokumen pendukung.",
+                  difficulty: "basic",
+                },
+              });
+
+              await tx.action_plan_steps.create({
+                data: {
+                  action_plan_id: actionPlan.id,
+                  task_id: task.id,
+                  step_order: index + 1,
+                  is_completed: false,
+                },
+              });
+            }
           }
-        } else {
-          for (let index = 0; index < result.recommendedTasks.length; index++) {
-            const taskTitle = result.recommendedTasks[index];
 
-            const task = await tx.tasks.create({
-              data: {
-                role:
-                  result.analysis.role || normalizeRoleToAi(data.targetRole),
-                title: taskTitle,
-                description:
-                  "Task dibuat otomatis dari hasil assessment user.",
-                expected_output:
-                  "Catatan belajar, screenshot, link project, file project, atau dokumen pendukung.",
-                difficulty: "basic",
-              },
-            });
+          await tx.progress.upsert({
+            where: {
+              user_id: userId,
+            },
+            update: {
+              total_tasks:
+                recommendedTasks.length || result.recommendedTasks.length || 0,
+              completed_tasks: 0,
+              progress_percentage: 0,
+              last_updated: new Date(),
+            },
+            create: {
+              user_id: userId,
+              total_tasks:
+                recommendedTasks.length || result.recommendedTasks.length || 0,
+              completed_tasks: 0,
+              progress_percentage: 0,
+            },
+          });
 
-            await tx.action_plan_steps.create({
-              data: {
-                action_plan_id: actionPlan.id,
-                task_id: task.id,
-                step_order: index + 1,
-                is_completed: false,
-              },
-            });
-          }
+          await tx.users.update({
+            where: {
+              id: userId,
+            },
+            data: {
+              is_assessment_done: true,
+            },
+          });
+
+          return {
+            context,
+            actionPlan,
+          };
         }
-
-        await tx.progress.upsert({
-          where: {
-            user_id: userId,
-          },
-          update: {
-            total_tasks:
-              recommendedTasks.length || result.recommendedTasks.length || 0,
-            completed_tasks: 0,
-            progress_percentage: 0,
-            last_updated: new Date(),
-          },
-          create: {
-            user_id: userId,
-            total_tasks:
-              recommendedTasks.length || result.recommendedTasks.length || 0,
-            completed_tasks: 0,
-            progress_percentage: 0,
-          },
-        });
-
-        await tx.users.update({
-          where: {
-            id: userId,
-          },
-          data: {
-            is_assessment_done: true,
-          },
-        });
-
-        return {
-          context,
-          actionPlan,
-        };
-      });
+      );
 
       return {
         ...result,
@@ -484,7 +487,7 @@ export class AssessmentService {
 
       const result = generateLocalFallbackResult(data.targetRole);
 
-      await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         await tx.assessments.createMany({
           data: data.answers.map((item) => ({
             user_id: userId,
