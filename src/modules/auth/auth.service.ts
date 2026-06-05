@@ -1,13 +1,31 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
 import { Resend } from "resend";
 import { OAuth2Client } from "google-auth-library";
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const prisma = new PrismaClient();
-const resend = new Resend(process.env.RESEND_API_KEY);
+
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
+
+  if (!secret) {
+    throw new Error("JWT_SECRET is not configured");
+  }
+
+  return secret;
+}
+
+function getResendClient() {
+  const apiKey = process.env.RESEND_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is not configured");
+  }
+
+  return new Resend(apiKey);
+}
 
 export const registerService = async (
   email: string,
@@ -71,7 +89,7 @@ export const loginService = async (
       email: user.email,
       role: user.role
     },
-    process.env.JWT_SECRET as string,
+    getJwtSecret(),
     {
       expiresIn: "7d"
     }
@@ -143,7 +161,7 @@ export const googleLoginService = async (
       email: user.email,
       role: user.role,
     },
-    process.env.JWT_SECRET as string,
+    getJwtSecret(),
     {
       expiresIn: "7d",
     }
@@ -172,7 +190,7 @@ export const forgotPasswordService = async (email: string) => {
 
   const token = jwt.sign(
     { id: user.id },
-    process.env.JWT_SECRET as string,
+    getJwtSecret(),
     { expiresIn: "10m" }
   );
 
@@ -181,7 +199,7 @@ export const forgotPasswordService = async (email: string) => {
   // 🔥 WAJIB INI
   console.log("RESET LINK:", resetLink);
 
-  await resend.emails.send({
+  await getResendClient().emails.send({
     from: "onboarding@resend.dev",
     to: email,
     subject: "Reset Password",
@@ -205,7 +223,7 @@ export const resetPasswordService = async (
 
     const decoded = jwt.verify(
       token,
-      process.env.JWT_SECRET as string
+      getJwtSecret()
     ) as any;
 
     const hashedPassword = await bcrypt.hash(password, 10);
