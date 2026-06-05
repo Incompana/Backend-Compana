@@ -4,7 +4,9 @@ import { getAi, getAiServiceUrl, postAi } from "../services/aiService";
 const aiRouter = Router();
 
 function forwardError(res: Response, error: unknown) {
-  const message = error instanceof Error ? error.message : "Unknown AI service error";
+  const message =
+    error instanceof Error ? error.message : "Unknown AI service error";
+
   res.status(502).json({
     status: "error",
     message,
@@ -14,6 +16,7 @@ function forwardError(res: Response, error: unknown) {
 aiRouter.get("/health", async (_req: Request, res: Response) => {
   try {
     const aiHealth = await getAi("/health");
+
     res.json({
       status: "ok",
       ai_service_url: getAiServiceUrl(),

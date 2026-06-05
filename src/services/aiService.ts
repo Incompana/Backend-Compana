@@ -1,4 +1,6 @@
-const AI_SERVICE_URL = (process.env.AI_SERVICE_URL || "http://localhost:8000").replace(/\/$/, "");
+const AI_SERVICE_URL = (
+  process.env.AI_SERVICE_URL || "http://localhost:8000"
+).replace(/\/$/, "");
 
 async function requestAi<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${AI_SERVICE_URL}${path}`, {

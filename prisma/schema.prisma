@@ -84,6 +84,8 @@ model submissions {
   task_id    String              @db.Char(36)
   content    String              @db.Text
   status     submissions_status? @default(pending)
+  file_url   String?
+  file_name  String?
   created_at DateTime            @default(now()) @db.Timestamp(0)
   feedback   feedback?
   tasks      tasks               @relation(fields: [task_id], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "fk_submissions_task")
@@ -100,6 +102,7 @@ model tasks {
   description       String              @db.Text
   expected_output   String?             @db.Text
   difficulty        tasks_difficulty?   @default(basic)
+  ai_task_id        String?
   created_at        DateTime            @default(now()) @db.Timestamp(0)
   action_plan_steps action_plan_steps[]
   submissions       submissions[]
@@ -126,7 +129,11 @@ model users {
   email        String         @unique(map: "email") @db.VarChar(255)
   password     String         @db.VarChar(255)
   role         users_role?    @default(user)
+
+  is_assessment_done Boolean @default(false)
+  avatar_url   String?
   created_at   DateTime       @default(now()) @db.Timestamp(0)
+
   action_plans action_plans[]
   assessments  assessments[]
   progress     progress?

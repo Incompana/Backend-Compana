@@ -3,26 +3,18 @@ import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
-import dotenv from "dotenv";
-import mainApiRouter from "./routes";
-
-dotenv.config();
+import router from "./routes";
+import path from "path";
 
 const app: Application = express();
-
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173,http://127.0.0.1:5173')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
 
 // CORS configuration for credentials
 const corsOptions = {
   credentials: true,
-  origin: allowedOrigins,
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
 };
 
 app.use(cors(corsOptions));
-app.use(helmet());
 app.use(express.json());
 app.use(urlencoded({ extended: true }));
 app.use(morgan('dev'));
@@ -36,6 +28,8 @@ app.get('/health', (req: Request, res: Response) => {
 });
 
 app.use("/img", express.static("public/img"));
-app.use("/api", mainApiRouter);
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+app.use("/api", router);
+
 
 export default app;
