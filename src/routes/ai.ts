@@ -67,6 +67,14 @@ aiRouter.post("/analyze-pretext", async (req: Request, res: Response) => {
   }
 });
 
+aiRouter.post("/predict-problem-category", async (req: Request, res: Response) => {
+  try {
+    res.json(await postAi("/predict-problem-category", req.body));
+  } catch (error) {
+    forwardError(res, error);
+  }
+});
+
 aiRouter.post("/select-questions", async (req: Request, res: Response) => {
   try {
     res.json(await postAi("/select-questions", req.body));
@@ -86,6 +94,30 @@ aiRouter.post("/submit-assessment", async (req: Request, res: Response) => {
 aiRouter.post("/evaluate-task", async (req: Request, res: Response) => {
   try {
     res.json(await postAi("/evaluate-task", req.body));
+  } catch (error) {
+    forwardError(res, error);
+  }
+});
+
+aiRouter.post("/compana-ai/task-feedback", async (req: Request, res: Response) => {
+  try {
+    res.json(await postAi("/compana-ai/task-feedback", req.body));
+  } catch (error) {
+    forwardError(res, error);
+  }
+});
+
+aiRouter.post("/compana-ai/learning-references", async (req: Request, res: Response) => {
+  try {
+    res.json(await postAi("/compana-ai/learning-references", req.body));
+  } catch (error) {
+    forwardError(res, error);
+  }
+});
+
+aiRouter.post("/compana-ai/explain-skill-gap", async (req: Request, res: Response) => {
+  try {
+    res.json(await postAi("/compana-ai/explain-skill-gap", req.body));
   } catch (error) {
     forwardError(res, error);
   }
