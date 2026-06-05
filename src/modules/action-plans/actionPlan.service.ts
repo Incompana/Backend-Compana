@@ -1,38 +1,42 @@
 import prisma from "../../config/prisma";
-import { UserContextService } from "../user-context/userContext.service";
 
-const generateStepsFromSkillGap = (skillGap: string[]) => {
-  if (!skillGap.length) {
-    return [
-      {
-        order: 1,
-        title: "Mulai dari dasar karier digital",
-        description:
-          "Pelajari dasar-dasar skill yang relevan dengan target kariermu.",
-        estimatedDays: 3,
-        isCompleted: false,
-      },
-    ];
-  }
-
-  return skillGap.map((skill, index) => ({
-    order: index + 1,
-    title: `Pelajari ${skill}`,
-    description: `Fokus memahami dasar ${skill}, lalu buat latihan kecil untuk menguatkan pemahamanmu.`,
-    estimatedDays: 3 + index,
-    isCompleted: false,
-  }));
+const normalizeStatus = (
+  isCompleted: boolean | null | undefined,
+  hasPassedSubmission: boolean,
+  hasRevisionSubmission: boolean,
+  isActive: boolean
+) => {
+  if (isCompleted || hasPassedSubmission) return "selesai";
+  if (hasRevisionSubmission) return "revision";
+  if (isActive) return "berjalan";
+  return "terkunci";
 };
 
 export class ActionPlanService {
   static async getMyActionPlan(userId: string) {
-    const context = await UserContextService.getLatest(userId);
+    const actionPlan = await prisma.action_plans.findFirst({
+      where: {
+        user_id: userId,
+        status: "active",
+      },
+      orderBy: {
+        created_at: "desc",
+      },
+      include: {
+        action_plan_steps: {
+          orderBy: {
+            step_order: "asc",
+          },
+          include: {
+            tasks: true,
+          },
+        },
+      },
+    });
 
-    if (!context) {
+    if (!actionPlan) {
       return null;
     }
-
-    const baseSteps = generateStepsFromSkillGap(context.skillGap);
 
     const submissions = await prisma.submissions.findMany({
       where: {
@@ -46,44 +50,69 @@ export class ActionPlanService {
       },
     });
 
-    const passedTaskTitles = new Set(
+    const passedTaskIds = new Set(
       submissions
         .filter((submission) => submission.status === "passed")
-        .map((submission) => submission.tasks.title)
+        .map((submission) => submission.task_id)
     );
 
-    const revisionTaskTitles = new Set(
+    const revisionTaskIds = new Set(
       submissions
         .filter((submission) => submission.status === "revision")
-        .map((submission) => submission.tasks.title)
+        .map((submission) => submission.task_id)
     );
 
-    const firstActiveIndex = baseSteps.findIndex(
-      (step) => !passedTaskTitles.has(step.title)
-    );
-
-    const steps = baseSteps.map((step, index) => {
-      const isCompleted = passedTaskTitles.has(step.title);
-      const isRevision = revisionTaskTitles.has(step.title);
-      const isActive = index === firstActiveIndex;
+    const stepsBase = actionPlan.action_plan_steps.map((step) => {
+      const hasPassedSubmission = passedTaskIds.has(step.task_id);
+      const hasRevisionSubmission = revisionTaskIds.has(step.task_id);
 
       return {
-        ...step,
-        isCompleted,
-        status: isCompleted
-          ? "selesai"
-          : isRevision
-          ? "revision"
-          : isActive
-          ? "berjalan"
-          : "terkunci",
-        isLocked: !isCompleted && !isActive,
+        step,
+        hasPassedSubmission,
+        hasRevisionSubmission,
+        isCompleted: Boolean(step.is_completed) || hasPassedSubmission,
+      };
+    });
+
+    const firstActiveIndex = stepsBase.findIndex((item) => !item.isCompleted);
+
+    const steps = stepsBase.map((item, index) => {
+      const { step, hasPassedSubmission, hasRevisionSubmission } = item;
+      const isActive = index === firstActiveIndex || firstActiveIndex === -1;
+
+      const status = normalizeStatus(
+        step.is_completed,
+        hasPassedSubmission,
+        hasRevisionSubmission,
+        isActive
+      );
+
+      return {
+        id: step.id,
+        order: step.step_order,
+        stepOrder: step.step_order,
+
+        title: step.tasks.title,
+        description: step.tasks.description,
+        expectedOutput: step.tasks.expected_output,
+        difficulty: step.tasks.difficulty,
+
+        taskId: step.tasks.id,
+        aiTaskId: step.tasks.ai_task_id,
+        targetRole: step.tasks.role,
+
+        isCompleted: status === "selesai",
+        status,
+        isLocked: status === "terkunci",
       };
     });
 
     return {
-      targetRole: context.targetRole,
-      confidenceScore: context.confidenceScore,
+      id: actionPlan.id,
+      targetRole: actionPlan.target_role,
+      title: actionPlan.title,
+      status: actionPlan.status,
+      createdAt: actionPlan.created_at,
       steps,
     };
   }

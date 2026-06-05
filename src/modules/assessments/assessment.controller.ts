@@ -13,26 +13,26 @@ export class AssessmentController {
         data: result,
       });
     } catch (error) {
-      console.error(error);
+      console.error("Analyze assessment error:", error);
 
       return res.status(500).json({
         success: false,
         message:
-          error instanceof Error
-            ? error.message
-            : "Internal server error",
+          error instanceof Error ? error.message : "Internal server error",
       });
     }
   }
 
   static async save(req: AuthRequest, res: Response) {
     try {
-      const userId = req.user.id;
+      if (!req.user?.id) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized",
+        });
+      }
 
-      const result = await AssessmentService.save(
-        userId,
-        req.body
-      );
+      const result = await AssessmentService.save(req.user.id, req.body);
 
       return res.status(200).json({
         success: true,
@@ -40,14 +40,12 @@ export class AssessmentController {
         data: result,
       });
     } catch (error) {
-      console.error(error);
+      console.error("Save assessment error:", error);
 
       return res.status(500).json({
         success: false,
         message:
-          error instanceof Error
-            ? error.message
-            : "Internal server error",
+          error instanceof Error ? error.message : "Internal server error",
       });
     }
   }

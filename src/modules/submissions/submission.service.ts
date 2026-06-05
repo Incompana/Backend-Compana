@@ -506,48 +506,59 @@ export class SubmissionService {
       },
     });
 
-    const latestContext = await prisma.user_context.findFirst({
+    const latestActionPlan = await prisma.action_plans.findFirst({
       where: {
         user_id: userId,
+        status: "active",
       },
       orderBy: {
         created_at: "desc",
       },
-    });
-
-    let skillGap: string[] = [];
-
-    try {
-      skillGap = JSON.parse(latestContext?.extracted_keywords || "[]");
-    } catch {
-      skillGap = [];
-    }
-
-    const planTaskTitles = skillGap.length
-      ? skillGap.map((skill) => `Pelajari ${skill}`)
-      : [taskTitle];
-
-    const allUserSubmissions = await prisma.submissions.findMany({
-      where: {
-        user_id: userId,
-      },
       include: {
-        tasks: true,
+        action_plan_steps: {
+          include: {
+            tasks: true,
+          },
+          orderBy: {
+            step_order: "asc",
+          },
+        },
       },
     });
 
-    const passedTaskTitles = new Set(
-      allUserSubmissions
-        .filter(
-          (item) =>
-            item.status === "passed" &&
-            planTaskTitles.includes(item.tasks.title)
-        )
-        .map((item) => item.tasks.title)
-    );
+    let totalTasks = 1;
+    let completedTasks = evaluation.status === "passed" ? 1 : 0;
 
-    const totalTasks = Math.max(planTaskTitles.length, 1);
-    const completedTasks = passedTaskTitles.size;
+    if (latestActionPlan) {
+      const actionPlanTaskIds = latestActionPlan.action_plan_steps.map(
+        (step) => step.task_id
+      );
+
+      totalTasks = Math.max(actionPlanTaskIds.length, 1);
+
+      await prisma.action_plan_steps.updateMany({
+        where: {
+          action_plan_id: latestActionPlan.id,
+          task_id: submission.task_id,
+        },
+        data: {
+          is_completed: evaluation.status === "passed",
+        },
+      });
+
+      const passedSubmissions = await prisma.submissions.findMany({
+        where: {
+          user_id: userId,
+          status: "passed",
+          task_id: {
+            in: actionPlanTaskIds,
+          },
+        },
+        distinct: ["task_id"],
+      });
+
+      completedTasks = passedSubmissions.length;
+    }
 
     const progressPercentage =
       totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
