@@ -1,5 +1,6 @@
 import prisma from "../../config/prisma";
 import { postAi } from "../../services/aiService";
+import { inspectSubmissionFile } from "../../utils/submissionFileInspector";
 
 type SubmitTaskPayload = {
   taskTitle: string;
@@ -7,6 +8,7 @@ type SubmitTaskPayload = {
   targetRole?: string;
   content?: string;
   fileUrl?: string | null;
+  filePath?: string | null;
   fileName?: string | null;
   fileMimeType?: string | null;
   fileSize?: number | null;
@@ -96,7 +98,12 @@ const getFileScore = (
   const isText =
     mime === "text/plain" ||
     lowerName.endsWith(".txt") ||
-    lowerName.endsWith(".md");
+    lowerName.endsWith(".md") ||
+    lowerName.endsWith(".html") ||
+    lowerName.endsWith(".css") ||
+    lowerName.endsWith(".js") ||
+    lowerName.endsWith(".ts") ||
+    lowerName.endsWith(".py");
 
   const isImage =
     mime.startsWith("image/") ||
@@ -127,11 +134,11 @@ const getFileScore = (
 
   if (isPdf || isText) {
     return {
-      score: 35,
-      type: "document",
-      label: isPdf ? "File PDF/laporan" : "File TXT/catatan",
+      score: isText ? 45 : 35,
+      type: isText ? "code_or_document" : "document",
+      label: isPdf ? "File PDF/laporan" : "File teks/kode",
       reason:
-        "File dokumen biasanya berisi catatan atau laporan, jadi nilainya sedang dan tetap butuh bukti pengerjaan yang jelas.",
+        "File teks/kode dapat dibaca backend dan dipakai sebagai bukti pengerjaan task.",
     };
   }
 
@@ -451,6 +458,12 @@ export class SubmissionService {
 
     let evaluation: NormalizedEvaluation = localEvaluation;
 
+    const inspectedFile = await inspectSubmissionFile(
+      payload.filePath,
+      payload.fileName,
+      payload.fileMimeType
+    );
+
     if (task.ai_task_id) {
       try {
         const submissionFiles = payload.fileName
@@ -468,6 +481,9 @@ export class SubmissionService {
               `Deskripsi task: ${task.description}`,
               content ? `Catatan user: ${content}` : "",
               payload.fileName ? `File dikirim: ${payload.fileName}` : "",
+              "",
+              "=== HASIL INSPEKSI FILE SUBMISSION ===",
+              inspectedFile.summary,
             ]
               .filter(Boolean)
               .join("\n"),
@@ -613,6 +629,11 @@ export class SubmissionService {
         fileScore: localEvaluation.fileScore,
         aiTaskId: task.ai_task_id,
         aiResult: evaluation.aiResult,
+      },
+      fileInspection: {
+        fileType: inspectedFile.fileType,
+        readableFileCount: inspectedFile.readableFileCount,
+        readableFiles: inspectedFile.files.map((file) => file.name),
       },
       progress: {
         completedTasks,

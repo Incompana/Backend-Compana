@@ -30,6 +30,7 @@ export class SubmissionController {
       const content = body.content as string | undefined;
 
       const fileUrl = req.file ? getPublicFileUrl(req.file.path) : null;
+      const filePath = req.file ? req.file.path : null;
       const fileName = req.file ? req.file.originalname : null;
       const fileMimeType = req.file ? req.file.mimetype : null;
       const fileSize = req.file ? req.file.size : null;
@@ -61,6 +62,7 @@ export class SubmissionController {
         targetRole,
         content,
         fileUrl,
+        filePath,
         fileName,
         fileMimeType,
         fileSize,
