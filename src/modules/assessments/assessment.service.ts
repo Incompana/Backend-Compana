@@ -16,6 +16,11 @@ type NormalizedActionTask = {
   difficulty?: string;
 };
 
+type AssessmentAnswer = {
+  question: string;
+  answer: string;
+};
+
 const normalizeRoleToAi = (role: string) => {
   const value = role.toLowerCase().trim();
 
@@ -23,10 +28,18 @@ const normalizeRoleToAi = (role: string) => {
   if (value.includes("backend")) return "backend_developer";
   if (value.includes("fullstack")) return "frontend_developer";
   if (value.includes("ui") || value.includes("ux")) return "ui_ux_designer";
-  if (value.includes("soc") || value.includes("security") || value.includes("cyber")) {
+  if (
+    value.includes("soc") ||
+    value.includes("security") ||
+    value.includes("cyber")
+  ) {
     return "soc_analyst";
   }
-  if (value.includes("machine") || value.includes("ml") || value.includes("ai")) {
+  if (
+    value.includes("machine") ||
+    value.includes("ml") ||
+    value.includes("ai")
+  ) {
     return "machine_learning_engineer";
   }
   if (value.includes("data")) return "data_analyst";
@@ -55,6 +68,29 @@ const normalizeDifficulty = (difficulty?: string) => {
   if (difficulty === "intermediate") return "intermediate";
 
   return "basic";
+};
+
+const normalizeAssessmentLevel = (level?: string) => {
+  const value = String(level || "").toLowerCase().trim();
+
+  if (
+    value.includes("advanced") ||
+    value.includes("mahir") ||
+    value.includes("lanjut") ||
+    value.includes("expert")
+  ) {
+    return "advanced";
+  }
+
+  if (
+    value.includes("intermediate") ||
+    value.includes("menengah") ||
+    value.includes("cukup")
+  ) {
+    return "intermediate";
+  }
+
+  return "beginner";
 };
 
 const getProblemCategory = (data: AssessmentPayload) => {
@@ -90,25 +126,16 @@ const getBlockerAnswer = (data: AssessmentPayload) => {
 };
 
 const getCurrentLevel = (data: AssessmentPayload) => {
-  if (data.currentLevel) return data.currentLevel.toLowerCase();
+  if (data.currentLevel) {
+    return normalizeAssessmentLevel(data.currentLevel);
+  }
 
   const joinedAnswers = (data.answers || [])
     .map((item) => `${item.question} ${item.answer}`)
     .join(" ")
     .toLowerCase();
 
-  if (joinedAnswers.includes("advanced") || joinedAnswers.includes("mahir")) {
-    return "advanced";
-  }
-
-  if (
-    joinedAnswers.includes("intermediate") ||
-    joinedAnswers.includes("menengah")
-  ) {
-    return "intermediate";
-  }
-
-  return "beginner";
+  return normalizeAssessmentLevel(joinedAnswers);
 };
 
 const buildAiAssessmentPayload = async (
@@ -190,11 +217,22 @@ const buildAiAssessmentPayload = async (
       );
     });
 
+    const isRuntimeSkillQuestion =
+      question.question_id?.startsWith("Q_RUNTIME_");
+
+    const fallbackAnswer = isRuntimeSkillQuestion
+      ? currentLevel
+      : blockerAnswer;
+
+    const fallbackText = isRuntimeSkillQuestion
+      ? currentLevel
+      : problemCategory;
+
     return {
       question_id: question.question_id,
-      answer: matchingAnswer?.answer || blockerAnswer,
-      answer_value: matchingAnswer?.answer || blockerAnswer,
-      answer_text: matchingAnswer?.answer || problemCategory,
+      answer: matchingAnswer?.answer || fallbackAnswer,
+      answer_value: matchingAnswer?.answer || fallbackAnswer,
+      answer_text: matchingAnswer?.answer || fallbackText,
     };
   });
 
@@ -261,6 +299,7 @@ const generateLocalFallbackResult = (targetRole: string) => {
           confidence: 80,
           strengths: ["Spreadsheet"],
           weaknesses: ["Data Cleaning", "Visualization", "Analysis"],
+          problemCategory: "skill_gap",
         },
         skillGap: ["Data Cleaning", "Visualization", "Analysis"],
         recommendedTasks: ["Bersihkan Dataset Spreadsheet Kecil"],
@@ -273,6 +312,7 @@ const generateLocalFallbackResult = (targetRole: string) => {
           confidence: 80,
           strengths: ["Python"],
           weaknesses: ["Text Cleaning", "Model Evaluation", "Experiment Tracking"],
+          problemCategory: "skill_gap",
         },
         skillGap: ["Text Cleaning", "Model Evaluation", "Experiment Tracking"],
         recommendedTasks: ["Buat Script Python untuk Membersihkan Teks"],
@@ -285,6 +325,7 @@ const generateLocalFallbackResult = (targetRole: string) => {
           confidence: 84,
           strengths: ["HTML", "CSS"],
           weaknesses: ["React", "Node.js", "Database"],
+          problemCategory: "skill_gap",
         },
         skillGap: ["React", "Node.js", "MySQL"],
         recommendedTasks: ["Bangun Landing Page Portfolio Pertamamu"],
@@ -297,6 +338,7 @@ const generateLocalFallbackResult = (targetRole: string) => {
           confidence: 75,
           strengths: ["HTML", "CSS"],
           weaknesses: ["JavaScript", "React"],
+          problemCategory: "skill_gap",
         },
         skillGap: ["JavaScript", "React"],
         recommendedTasks: ["Bangun Landing Page Portfolio Pertamamu"],
@@ -474,7 +516,7 @@ const saveActionPlanTasks = async (
       },
     });
 
-    let taskId = existingTask?.id || randomUUID();
+    const taskId = existingTask?.id || randomUUID();
 
     if (existingTask) {
       await tx.tasks.updateMany({
@@ -515,25 +557,22 @@ const saveActionPlanTasks = async (
   }
 };
 
-const saveAssessmentTransaction = async (
-  params: {
-    userId: string;
-    targetRole: string;
-    result: any;
-    tasks: NormalizedActionTask[];
-  }
-) => {
-  const { userId, targetRole, result, tasks } = params;
+const saveAssessmentTransaction = async (params: {
+  userId: string;
+  targetRole: string;
+  result: any;
+  tasks: NormalizedActionTask[];
+  answers: AssessmentAnswer[];
+}) => {
+  const { userId, targetRole, result, tasks, answers } = params;
   const role = result.analysis.role || normalizeRoleToAi(targetRole);
   const contextId = randomUUID();
   const actionPlanId = randomUUID();
 
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    const answers = (result as any).answers || [];
-
     if (answers.length) {
       await tx.assessments.createMany({
-        data: answers.map((item: any) => ({
+        data: answers.map((item) => ({
           user_id: userId,
           question: item.question,
           answer: item.answer,
@@ -635,6 +674,7 @@ export class AssessmentService {
         targetRole: data.targetRole,
         result,
         tasks: normalizedTasks,
+        answers: data.answers || [],
       });
 
       return {
@@ -659,6 +699,7 @@ export class AssessmentService {
         targetRole: data.targetRole,
         result,
         tasks: fallbackTasks,
+        answers: data.answers || [],
       });
 
       return {
