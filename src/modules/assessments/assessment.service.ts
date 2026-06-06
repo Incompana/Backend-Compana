@@ -60,7 +60,7 @@ const normalizeDifficulty = (difficulty?: string) => {
 const getProblemCategory = (data: AssessmentPayload) => {
   if (data.problemCategory) return data.problemCategory;
 
-  const joinedAnswers = data.answers
+  const joinedAnswers = (data.answers || [])
     .map((item) => `${item.question} ${item.answer}`)
     .join(" ")
     .toLowerCase();
@@ -76,7 +76,7 @@ const getProblemCategory = (data: AssessmentPayload) => {
 const getBlockerAnswer = (data: AssessmentPayload) => {
   if (data.blockerType) return data.blockerType;
 
-  const joinedAnswers = data.answers
+  const joinedAnswers = (data.answers || [])
     .map((item) => `${item.question} ${item.answer}`)
     .join(" ")
     .toLowerCase();
@@ -92,7 +92,7 @@ const getBlockerAnswer = (data: AssessmentPayload) => {
 const getCurrentLevel = (data: AssessmentPayload) => {
   if (data.currentLevel) return data.currentLevel.toLowerCase();
 
-  const joinedAnswers = data.answers
+  const joinedAnswers = (data.answers || [])
     .map((item) => `${item.question} ${item.answer}`)
     .join(" ")
     .toLowerCase();
@@ -181,7 +181,7 @@ const buildAiAssessmentPayload = async (
       };
     }
 
-    const matchingAnswer = data.answers.find((item) => {
+    const matchingAnswer = (data.answers || []).find((item) => {
       const questionText = question.question || question.prompt || "";
 
       return (
@@ -374,6 +374,80 @@ const buildTasksFromAiResult = (
   }));
 };
 
+const insertUserContext = async (
+  tx: Prisma.TransactionClient,
+  params: {
+    id: string;
+    userId: string;
+    role: string;
+    problemCategory: string;
+    confidenceScore: number;
+    extractedKeywords: string;
+  }
+) => {
+  await tx.$executeRaw`
+    INSERT INTO user_context
+      (id, user_id, target_role, problem_category, confidence_score, extracted_keywords, created_at)
+    VALUES
+      (
+        ${params.id},
+        ${params.userId},
+        ${params.role},
+        ${params.problemCategory},
+        ${params.confidenceScore},
+        ${params.extractedKeywords},
+        NOW()
+      )
+  `;
+};
+
+const insertActionPlan = async (
+  tx: Prisma.TransactionClient,
+  params: {
+    id: string;
+    userId: string;
+    contextId: string;
+    role: string;
+    title: string;
+  }
+) => {
+  await tx.$executeRaw`
+    INSERT INTO action_plans
+      (id, user_id, generated_from_context_id, target_role, title, status, created_at)
+    VALUES
+      (
+        ${params.id},
+        ${params.userId},
+        ${params.contextId},
+        ${params.role},
+        ${params.title},
+        'active',
+        NOW()
+      )
+  `;
+};
+
+const upsertProgress = async (
+  tx: Prisma.TransactionClient,
+  params: {
+    id: string;
+    userId: string;
+    totalTasks: number;
+  }
+) => {
+  await tx.$executeRaw`
+    INSERT INTO progress
+      (id, user_id, completed_tasks, total_tasks, progress_percentage, last_updated)
+    VALUES
+      (${params.id}, ${params.userId}, 0, ${params.totalTasks}, 0, NOW())
+    ON DUPLICATE KEY UPDATE
+      completed_tasks = 0,
+      total_tasks = VALUES(total_tasks),
+      progress_percentage = 0,
+      last_updated = NOW()
+  `;
+};
+
 const saveActionPlanTasks = async (
   tx: Prisma.TransactionClient,
   params: {
@@ -387,7 +461,7 @@ const saveActionPlanTasks = async (
   for (let index = 0; index < tasks.length; index++) {
     const aiTask = tasks[index];
 
-    let task = await tx.tasks.findFirst({
+    const existingTask = await tx.tasks.findFirst({
       where: {
         title: aiTask.task_title,
         role,
@@ -400,70 +474,126 @@ const saveActionPlanTasks = async (
       },
     });
 
-    if (task) {
-      const updatedTask = await tx.tasks.update({
+    let taskId = existingTask?.id || randomUUID();
+
+    if (existingTask) {
+      await tx.tasks.updateMany({
         where: {
-          id: task.id,
+          id: existingTask.id,
         },
         data: {
-          description: aiTask.task_description || task.description,
-          expected_output: aiTask.output_format || task.expected_output,
+          description: aiTask.task_description || existingTask.description,
+          expected_output: aiTask.output_format || existingTask.expected_output,
           difficulty: normalizeDifficulty(aiTask.difficulty),
-          ai_task_id: aiTask.task_id || task.ai_task_id,
-        },
-        select: {
-          id: true,
+          ai_task_id: aiTask.task_id || existingTask.ai_task_id,
         },
       });
-
-      await tx.action_plan_steps.create({
-        data: {
-          id: randomUUID(),
-          action_plan_id: actionPlanId,
-          task_id: updatedTask.id,
-          step_order: index + 1,
-          is_completed: false,
-        },
-        select: {
-          id: true,
-        },
-      });
-
-      continue;
+    } else {
+      await tx.$executeRaw`
+        INSERT INTO tasks
+          (id, role, title, description, expected_output, difficulty, ai_task_id, created_at)
+        VALUES
+          (
+            ${taskId},
+            ${role},
+            ${aiTask.task_title},
+            ${aiTask.task_description || "Task dibuat otomatis dari rekomendasi AI."},
+            ${aiTask.output_format || "File project, screenshot, link, atau catatan pengerjaan."},
+            ${normalizeDifficulty(aiTask.difficulty)},
+            ${aiTask.task_id || null},
+            NOW()
+          )
+      `;
     }
 
-    const createdTask = await tx.tasks.create({
-      data: {
-        id: randomUUID(),
-        role,
-        title: aiTask.task_title,
-        description:
-          aiTask.task_description ||
-          "Task dibuat otomatis dari rekomendasi AI.",
-        expected_output:
-          aiTask.output_format ||
-          "File project, screenshot, link, atau catatan pengerjaan.",
-        difficulty: normalizeDifficulty(aiTask.difficulty),
-        ai_task_id: aiTask.task_id || null,
+    await tx.$executeRaw`
+      INSERT INTO action_plan_steps
+        (id, action_plan_id, task_id, step_order, is_completed)
+      VALUES
+        (${randomUUID()}, ${actionPlanId}, ${taskId}, ${index + 1}, false)
+    `;
+  }
+};
+
+const saveAssessmentTransaction = async (
+  params: {
+    userId: string;
+    targetRole: string;
+    result: any;
+    tasks: NormalizedActionTask[];
+  }
+) => {
+  const { userId, targetRole, result, tasks } = params;
+  const role = result.analysis.role || normalizeRoleToAi(targetRole);
+  const contextId = randomUUID();
+  const actionPlanId = randomUUID();
+
+  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const answers = (result as any).answers || [];
+
+    if (answers.length) {
+      await tx.assessments.createMany({
+        data: answers.map((item: any) => ({
+          user_id: userId,
+          question: item.question,
+          answer: item.answer,
+        })),
+      });
+    }
+
+    await insertUserContext(tx, {
+      id: contextId,
+      userId,
+      role,
+      problemCategory: (result.analysis as any).problemCategory || "skill_gap",
+      confidenceScore: Number(result.analysis.confidence || 0),
+      extractedKeywords: JSON.stringify(result.skillGap || []),
+    });
+
+    await tx.action_plans.updateMany({
+      where: {
+        user_id: userId,
+        status: "active",
       },
-      select: {
-        id: true,
+      data: {
+        status: "archived",
       },
     });
 
-    await tx.action_plan_steps.create({
-      data: {
-        id: randomUUID(),
-        action_plan_id: actionPlanId,
-        task_id: createdTask.id,
-        step_order: index + 1,
-        is_completed: false,
+    await insertActionPlan(tx, {
+      id: actionPlanId,
+      userId,
+      contextId,
+      role,
+      title: `Action Plan ${normalizeRoleLabel(targetRole)}`,
+    });
+
+    await saveActionPlanTasks(tx, {
+      actionPlanId,
+      role,
+      tasks,
+    });
+
+    await upsertProgress(tx, {
+      id: randomUUID(),
+      userId,
+      totalTasks: tasks.length,
+    });
+
+    await tx.users.updateMany({
+      where: {
+        id: userId,
       },
-      select: {
-        id: true,
+      data: {
+        is_assessment_done: true,
       },
     });
-  }
+  });
+
+  return {
+    contextId,
+    actionPlanId,
+  };
 };
 
 export class AssessmentService {
@@ -494,121 +624,27 @@ export class AssessmentService {
       );
 
       const result = convertAiResultToLegacyResult(data.targetRole, aiResult);
-      const role = result.analysis.role || normalizeRoleToAi(data.targetRole);
 
       const normalizedTasks = buildTasksFromAiResult(
         aiResult,
         result.recommendedTasks
       );
 
-      const savedResult = await prisma.$transaction(
-        async (tx: Prisma.TransactionClient) => {
-          await tx.assessments.createMany({
-            data: data.answers.map((item) => ({
-              user_id: userId,
-              question: item.question,
-              answer: item.answer,
-            })),
-          });
-
-          const context = await tx.user_context.create({
-            data: {
-              id: randomUUID(),
-              user_id: userId,
-              target_role: role,
-              problem_category:
-                result.analysis.problemCategory || "skill_gap",
-              confidence_score: Number(result.analysis.confidence || 0),
-              extracted_keywords: JSON.stringify(result.skillGap),
-            },
-            select: {
-              id: true,
-            },
-          });
-
-          await tx.action_plans.updateMany({
-            where: {
-              user_id: userId,
-              status: "active",
-            },
-            data: {
-              status: "archived",
-            },
-          });
-
-          const actionPlan = await tx.action_plans.create({
-            data: {
-              id: randomUUID(),
-              user_id: userId,
-              generated_from_context_id: context.id,
-              target_role: role,
-              title: `Action Plan ${normalizeRoleLabel(data.targetRole)}`,
-              status: "active",
-            },
-            select: {
-              id: true,
-            },
-          });
-
-          await saveActionPlanTasks(tx, {
-            actionPlanId: actionPlan.id,
-            role,
-            tasks: normalizedTasks,
-          });
-
-          await tx.progress.upsert({
-            where: {
-              user_id: userId,
-            },
-            update: {
-              total_tasks: normalizedTasks.length,
-              completed_tasks: 0,
-              progress_percentage: 0,
-              last_updated: new Date(),
-            },
-            create: {
-              id: randomUUID(),
-              user_id: userId,
-              total_tasks: normalizedTasks.length,
-              completed_tasks: 0,
-              progress_percentage: 0,
-            },
-            select: {
-              id: true,
-            },
-          });
-
-          await tx.users.update({
-            where: {
-              id: userId,
-            },
-            data: {
-              is_assessment_done: true,
-            },
-            select: {
-              id: true,
-            },
-          });
-
-          return {
-            context,
-            actionPlan,
-          };
-        }
-      );
+      const saved = await saveAssessmentTransaction({
+        userId,
+        targetRole: data.targetRole,
+        result,
+        tasks: normalizedTasks,
+      });
 
       return {
         ...result,
-        saved: {
-          contextId: savedResult.context.id,
-          actionPlanId: savedResult.actionPlan.id,
-        },
+        saved,
       };
     } catch (error) {
       console.error("AI assessment save failed, using fallback:", error);
 
       const result = generateLocalFallbackResult(data.targetRole);
-      const role = result.analysis.role || normalizeRoleToAi(data.targetRole);
 
       const fallbackTasks = result.recommendedTasks.map((title) => ({
         task_title: title,
@@ -618,95 +654,17 @@ export class AssessmentService {
         difficulty: "basic",
       }));
 
-      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-        await tx.assessments.createMany({
-          data: data.answers.map((item) => ({
-            user_id: userId,
-            question: item.question,
-            answer: item.answer,
-          })),
-        });
-
-        const context = await tx.user_context.create({
-          data: {
-            id: randomUUID(),
-            user_id: userId,
-            target_role: role,
-            problem_category: "skill_gap",
-            confidence_score: Number(result.analysis.confidence || 0),
-            extracted_keywords: JSON.stringify(result.skillGap),
-          },
-          select: {
-            id: true,
-          },
-        });
-
-        await tx.action_plans.updateMany({
-          where: {
-            user_id: userId,
-            status: "active",
-          },
-          data: {
-            status: "archived",
-          },
-        });
-
-        const actionPlan = await tx.action_plans.create({
-          data: {
-            id: randomUUID(),
-            user_id: userId,
-            generated_from_context_id: context.id,
-            target_role: role,
-            title: `Action Plan ${normalizeRoleLabel(data.targetRole)}`,
-            status: "active",
-          },
-          select: {
-            id: true,
-          },
-        });
-
-        await saveActionPlanTasks(tx, {
-          actionPlanId: actionPlan.id,
-          role,
-          tasks: fallbackTasks,
-        });
-
-        await tx.progress.upsert({
-          where: {
-            user_id: userId,
-          },
-          update: {
-            total_tasks: fallbackTasks.length,
-            completed_tasks: 0,
-            progress_percentage: 0,
-            last_updated: new Date(),
-          },
-          create: {
-            id: randomUUID(),
-            user_id: userId,
-            total_tasks: fallbackTasks.length,
-            completed_tasks: 0,
-            progress_percentage: 0,
-          },
-          select: {
-            id: true,
-          },
-        });
-
-        await tx.users.update({
-          where: {
-            id: userId,
-          },
-          data: {
-            is_assessment_done: true,
-          },
-          select: {
-            id: true,
-          },
-        });
+      const saved = await saveAssessmentTransaction({
+        userId,
+        targetRole: data.targetRole,
+        result,
+        tasks: fallbackTasks,
       });
 
-      return result;
+      return {
+        ...result,
+        saved,
+      };
     }
   }
 }
