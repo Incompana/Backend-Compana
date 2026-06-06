@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import prisma from "../../config/prisma";
 import type { Prisma } from "@prisma/client";
 import {
@@ -182,6 +183,7 @@ const buildAiAssessmentPayload = async (
 
     const matchingAnswer = data.answers.find((item) => {
       const questionText = question.question || question.prompt || "";
+
       return (
         item.question.toLowerCase().trim() ===
         questionText.toLowerCase().trim()
@@ -390,10 +392,16 @@ const saveActionPlanTasks = async (
         title: aiTask.task_title,
         role,
       },
+      select: {
+        id: true,
+        description: true,
+        expected_output: true,
+        ai_task_id: true,
+      },
     });
 
     if (task) {
-      task = await tx.tasks.update({
+      const updatedTask = await tx.tasks.update({
         where: {
           id: task.id,
         },
@@ -403,30 +411,56 @@ const saveActionPlanTasks = async (
           difficulty: normalizeDifficulty(aiTask.difficulty),
           ai_task_id: aiTask.task_id || task.ai_task_id,
         },
-      });
-    } else {
-      task = await tx.tasks.create({
-        data: {
-          role,
-          title: aiTask.task_title,
-          description:
-            aiTask.task_description ||
-            "Task dibuat otomatis dari rekomendasi AI.",
-          expected_output:
-            aiTask.output_format ||
-            "File project, screenshot, link, atau catatan pengerjaan.",
-          difficulty: normalizeDifficulty(aiTask.difficulty),
-          ai_task_id: aiTask.task_id || null,
+        select: {
+          id: true,
         },
       });
+
+      await tx.action_plan_steps.create({
+        data: {
+          id: randomUUID(),
+          action_plan_id: actionPlanId,
+          task_id: updatedTask.id,
+          step_order: index + 1,
+          is_completed: false,
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      continue;
     }
+
+    const createdTask = await tx.tasks.create({
+      data: {
+        id: randomUUID(),
+        role,
+        title: aiTask.task_title,
+        description:
+          aiTask.task_description ||
+          "Task dibuat otomatis dari rekomendasi AI.",
+        expected_output:
+          aiTask.output_format ||
+          "File project, screenshot, link, atau catatan pengerjaan.",
+        difficulty: normalizeDifficulty(aiTask.difficulty),
+        ai_task_id: aiTask.task_id || null,
+      },
+      select: {
+        id: true,
+      },
+    });
 
     await tx.action_plan_steps.create({
       data: {
+        id: randomUUID(),
         action_plan_id: actionPlanId,
-        task_id: task.id,
+        task_id: createdTask.id,
         step_order: index + 1,
         is_completed: false,
+      },
+      select: {
+        id: true,
       },
     });
   }
@@ -445,6 +479,7 @@ export class AssessmentService {
       return convertAiResultToLegacyResult(data.targetRole, aiResult);
     } catch (error) {
       console.error("AI assessment analyze failed, using fallback:", error);
+
       return generateLocalFallbackResult(data.targetRole);
     }
   }
@@ -460,6 +495,7 @@ export class AssessmentService {
 
       const result = convertAiResultToLegacyResult(data.targetRole, aiResult);
       const role = result.analysis.role || normalizeRoleToAi(data.targetRole);
+
       const normalizedTasks = buildTasksFromAiResult(
         aiResult,
         result.recommendedTasks
@@ -477,12 +513,16 @@ export class AssessmentService {
 
           const context = await tx.user_context.create({
             data: {
+              id: randomUUID(),
               user_id: userId,
               target_role: role,
               problem_category:
                 result.analysis.problemCategory || "skill_gap",
-              confidence_score: result.analysis.confidence,
+              confidence_score: Number(result.analysis.confidence || 0),
               extracted_keywords: JSON.stringify(result.skillGap),
+            },
+            select: {
+              id: true,
             },
           });
 
@@ -498,11 +538,15 @@ export class AssessmentService {
 
           const actionPlan = await tx.action_plans.create({
             data: {
+              id: randomUUID(),
               user_id: userId,
               generated_from_context_id: context.id,
               target_role: role,
               title: `Action Plan ${normalizeRoleLabel(data.targetRole)}`,
               status: "active",
+            },
+            select: {
+              id: true,
             },
           });
 
@@ -523,10 +567,14 @@ export class AssessmentService {
               last_updated: new Date(),
             },
             create: {
+              id: randomUUID(),
               user_id: userId,
               total_tasks: normalizedTasks.length,
               completed_tasks: 0,
               progress_percentage: 0,
+            },
+            select: {
+              id: true,
             },
           });
 
@@ -536,6 +584,9 @@ export class AssessmentService {
             },
             data: {
               is_assessment_done: true,
+            },
+            select: {
+              id: true,
             },
           });
 
@@ -559,6 +610,14 @@ export class AssessmentService {
       const result = generateLocalFallbackResult(data.targetRole);
       const role = result.analysis.role || normalizeRoleToAi(data.targetRole);
 
+      const fallbackTasks = result.recommendedTasks.map((title) => ({
+        task_title: title,
+        task_description: "Task dibuat otomatis dari hasil assessment user.",
+        output_format:
+          "Catatan belajar, screenshot, link project, file project, atau dokumen pendukung.",
+        difficulty: "basic",
+      }));
+
       await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         await tx.assessments.createMany({
           data: data.answers.map((item) => ({
@@ -570,11 +629,15 @@ export class AssessmentService {
 
         const context = await tx.user_context.create({
           data: {
+            id: randomUUID(),
             user_id: userId,
             target_role: role,
             problem_category: "skill_gap",
-            confidence_score: result.analysis.confidence,
+            confidence_score: Number(result.analysis.confidence || 0),
             extracted_keywords: JSON.stringify(result.skillGap),
+          },
+          select: {
+            id: true,
           },
         });
 
@@ -590,21 +653,17 @@ export class AssessmentService {
 
         const actionPlan = await tx.action_plans.create({
           data: {
+            id: randomUUID(),
             user_id: userId,
             generated_from_context_id: context.id,
             target_role: role,
             title: `Action Plan ${normalizeRoleLabel(data.targetRole)}`,
             status: "active",
           },
+          select: {
+            id: true,
+          },
         });
-
-        const fallbackTasks = result.recommendedTasks.map((title) => ({
-          task_title: title,
-          task_description: "Task dibuat otomatis dari hasil assessment user.",
-          output_format:
-            "Catatan belajar, screenshot, link project, file project, atau dokumen pendukung.",
-          difficulty: "basic",
-        }));
 
         await saveActionPlanTasks(tx, {
           actionPlanId: actionPlan.id,
@@ -623,10 +682,14 @@ export class AssessmentService {
             last_updated: new Date(),
           },
           create: {
+            id: randomUUID(),
             user_id: userId,
             total_tasks: fallbackTasks.length,
             completed_tasks: 0,
             progress_percentage: 0,
+          },
+          select: {
+            id: true,
           },
         });
 
@@ -636,6 +699,9 @@ export class AssessmentService {
           },
           data: {
             is_assessment_done: true,
+          },
+          select: {
+            id: true,
           },
         });
       });
