@@ -1,36 +1,49 @@
 import prisma from "../../config/prisma";
-import { UserContextService } from "../user-context/userContext.service";
-
-const generateStepsFromSkillGap = (skillGap: string[]) => {
-  if (!skillGap.length) {
-    return [
-      {
-        order: 1,
-        title: "Mulai dari dasar karier digital",
-        description:
-          "Pelajari dasar-dasar skill yang relevan dengan target kariermu.",
-        estimatedDays: 3,
-      },
-    ];
-  }
-
-  return skillGap.map((skill, index) => ({
-    order: index + 1,
-    title: `Pelajari ${skill}`,
-    description: `Fokus memahami dasar ${skill}, lalu buat latihan kecil untuk menguatkan pemahamanmu.`,
-    estimatedDays: 3 + index,
-  }));
-};
 
 export class ProgressService {
   static async getMyProgress(userId: string) {
-    const context = await UserContextService.getLatest(userId);
+    const actionPlan = await prisma.action_plans.findFirst({
+      where: {
+        user_id: userId,
+        status: "active",
+      },
+      orderBy: {
+        created_at: "desc",
+      },
+      include: {
+        action_plan_steps: {
+          orderBy: {
+            step_order: "asc",
+          },
+          include: {
+            tasks: true,
+          },
+        },
+      },
+    });
 
-    const steps = generateStepsFromSkillGap(context?.skillGap || []);
+    if (!actionPlan) {
+      return {
+        completedTasks: 0,
+        totalTasks: 0,
+        progressPercentage: 0,
+        totalXp: 0,
+        allCompleted: false,
+        currentTask: null,
+        latestTask: null,
+      };
+    }
+
+    const actionPlanTaskIds = actionPlan.action_plan_steps.map(
+      (step) => step.task_id
+    );
 
     const submissions = await prisma.submissions.findMany({
       where: {
         user_id: userId,
+        task_id: {
+          in: actionPlanTaskIds,
+        },
       },
       orderBy: {
         created_at: "desc",
@@ -41,28 +54,33 @@ export class ProgressService {
       },
     });
 
-    const passedTaskTitles = new Set(
+    const passedTaskIds = new Set(
       submissions
         .filter((submission) => submission.status === "passed")
-        .map((submission) => submission.tasks.title)
+        .map((submission) => submission.task_id)
     );
 
-    const revisionTaskTitles = new Set(
+    const revisionTaskIds = new Set(
       submissions
         .filter((submission) => submission.status === "revision")
-        .map((submission) => submission.tasks.title)
+        .map((submission) => submission.task_id)
     );
 
-    const completedTasks = steps.filter((step) =>
-      passedTaskTitles.has(step.title)
-    ).length;
+    const totalTasks = actionPlan.action_plan_steps.length;
 
-    const totalTasks = steps.length;
+    const completedTasks = actionPlan.action_plan_steps.filter((step) => {
+      return Boolean(step.is_completed) || passedTaskIds.has(step.task_id);
+    }).length;
 
     const progressPercentage =
-      totalTasks > 0
-        ? Math.round((completedTasks / totalTasks) * 100)
-        : 0;
+      totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+    const currentStep =
+      actionPlan.action_plan_steps.find((step) => {
+        return !step.is_completed && !passedTaskIds.has(step.task_id);
+      }) || null;
+
+    const latestSubmission = submissions[0] || null;
 
     const totalXp = submissions.reduce((total, submission) => {
       if (submission.status === "passed") return total + 120;
@@ -71,11 +89,23 @@ export class ProgressService {
       return total;
     }, 0);
 
-    const currentStep = steps.find(
-      (step) => !passedTaskTitles.has(step.title)
-    );
-
-    const latestSubmission = submissions[0] || null;
+    await prisma.progress.upsert({
+      where: {
+        user_id: userId,
+      },
+      update: {
+        completed_tasks: completedTasks,
+        total_tasks: totalTasks,
+        progress_percentage: progressPercentage,
+        last_updated: new Date(),
+      },
+      create: {
+        user_id: userId,
+        completed_tasks: completedTasks,
+        total_tasks: totalTasks,
+        progress_percentage: progressPercentage,
+      },
+    });
 
     return {
       completedTasks,
@@ -86,11 +116,18 @@ export class ProgressService {
 
       currentTask: currentStep
         ? {
-            title: currentStep.title,
-            description: currentStep.description,
-            order: currentStep.order,
-            estimatedDays: currentStep.estimatedDays,
-            status: revisionTaskTitles.has(currentStep.title)
+            id: currentStep.id,
+            taskId: currentStep.task_id,
+            title: currentStep.tasks.title,
+            description: currentStep.tasks.description,
+            expectedOutput: currentStep.tasks.expected_output,
+            difficulty: currentStep.tasks.difficulty,
+            aiTaskId: currentStep.tasks.ai_task_id,
+            order: currentStep.step_order,
+            stepOrder: currentStep.step_order,
+            targetRole: currentStep.tasks.role,
+            isCompleted: false,
+            status: revisionTaskIds.has(currentStep.task_id)
               ? "revision"
               : "active",
           }

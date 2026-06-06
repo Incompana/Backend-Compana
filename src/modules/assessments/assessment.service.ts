@@ -7,6 +7,14 @@ import {
 } from "./assessment.types";
 import { postAi } from "../../services/aiService";
 
+type NormalizedActionTask = {
+  task_id?: string;
+  task_title: string;
+  task_description: string;
+  output_format: string;
+  difficulty?: string;
+};
+
 const normalizeRoleToAi = (role: string) => {
   const value = role.toLowerCase().trim();
 
@@ -14,10 +22,13 @@ const normalizeRoleToAi = (role: string) => {
   if (value.includes("backend")) return "backend_developer";
   if (value.includes("fullstack")) return "frontend_developer";
   if (value.includes("ui") || value.includes("ux")) return "ui_ux_designer";
-  if (value.includes("soc") || value.includes("security")) return "soc_analyst";
-  if (value.includes("machine") || value.includes("ml")) {
+  if (value.includes("soc") || value.includes("security") || value.includes("cyber")) {
+    return "soc_analyst";
+  }
+  if (value.includes("machine") || value.includes("ml") || value.includes("ai")) {
     return "machine_learning_engineer";
   }
+  if (value.includes("data")) return "data_analyst";
 
   return "general_learner";
 };
@@ -31,10 +42,18 @@ const normalizeRoleLabel = (role: string) => {
     ui_ux_designer: "UI/UX Designer",
     soc_analyst: "SOC Analyst",
     machine_learning_engineer: "Machine Learning Engineer",
+    data_analyst: "Data Analyst",
     general_learner: "General Learner",
   };
 
   return labels[value] || role;
+};
+
+const normalizeDifficulty = (difficulty?: string) => {
+  if (difficulty === "advanced") return "advanced";
+  if (difficulty === "intermediate") return "intermediate";
+
+  return "basic";
 };
 
 const getProblemCategory = (data: AssessmentPayload) => {
@@ -233,52 +252,183 @@ const convertAiResultToLegacyResult = (
 const generateLocalFallbackResult = (targetRole: string) => {
   switch (targetRole) {
     case "Data Scientist":
+    case "Data Analyst":
       return {
         analysis: {
-          role: targetRole,
-          confidence: 85,
-          strengths: ["Python"],
-          weaknesses: ["Statistics", "Machine Learning", "Pandas"],
+          role: normalizeRoleToAi(targetRole),
+          confidence: 80,
+          strengths: ["Spreadsheet"],
+          weaknesses: ["Data Cleaning", "Visualization", "Analysis"],
         },
-        skillGap: ["Statistics", "Machine Learning", "Pandas"],
-        recommendedTasks: ["EDA Project", "Data Cleaning", "Classification Model"],
+        skillGap: ["Data Cleaning", "Visualization", "Analysis"],
+        recommendedTasks: ["Bersihkan Dataset Spreadsheet Kecil"],
       };
 
     case "Machine Learning Engineer":
       return {
         analysis: {
-          role: targetRole,
+          role: normalizeRoleToAi(targetRole),
           confidence: 80,
           strengths: ["Python"],
-          weaknesses: ["Tensorflow", "Deep Learning", "Model Deployment"],
+          weaknesses: ["Text Cleaning", "Model Evaluation", "Experiment Tracking"],
         },
-        skillGap: ["Tensorflow", "Deep Learning", "Deployment"],
-        recommendedTasks: ["Image Classification", "Build CNN", "Deploy Model"],
+        skillGap: ["Text Cleaning", "Model Evaluation", "Experiment Tracking"],
+        recommendedTasks: ["Buat Script Python untuk Membersihkan Teks"],
       };
 
     case "Fullstack Developer":
       return {
         analysis: {
-          role: targetRole,
+          role: "frontend_developer",
           confidence: 84,
           strengths: ["HTML", "CSS"],
           weaknesses: ["React", "Node.js", "Database"],
         },
         skillGap: ["React", "Node.js", "MySQL"],
-        recommendedTasks: ["CRUD App", "REST API", "Fullstack Project"],
+        recommendedTasks: ["Bangun Landing Page Portfolio Pertamamu"],
       };
 
     default:
       return {
         analysis: {
-          role: "Frontend Developer",
+          role: normalizeRoleToAi(targetRole),
           confidence: 75,
           strengths: ["HTML", "CSS"],
           weaknesses: ["JavaScript", "React"],
         },
         skillGap: ["JavaScript", "React"],
-        recommendedTasks: ["Landing Page", "React Project"],
+        recommendedTasks: ["Bangun Landing Page Portfolio Pertamamu"],
       };
+  }
+};
+
+const buildTasksFromAiResult = (
+  aiResult: AiSubmitAssessmentResponse,
+  fallbackTaskTitles: string[]
+): NormalizedActionTask[] => {
+  const recommendedTasks = aiResult.action_plan?.recommended_tasks || [];
+  const missingSkills = aiResult.skill_gap?.missing_skills || [];
+
+  const normalizedTasks: NormalizedActionTask[] = [];
+  const usedTaskIds = new Set<string>();
+  const usedTitles = new Set<string>();
+
+  for (const task of recommendedTasks) {
+    if (!task.task_title) continue;
+
+    if (task.task_id) {
+      usedTaskIds.add(task.task_id);
+    }
+
+    usedTitles.add(task.task_title.toLowerCase());
+
+    normalizedTasks.push({
+      task_id: task.task_id,
+      task_title: task.task_title,
+      task_description:
+        task.task_description || "Task dibuat otomatis dari rekomendasi AI.",
+      output_format:
+        task.output_format ||
+        task.assessment_checklist ||
+        "File project, screenshot, link, atau catatan pengerjaan.",
+      difficulty: task.difficulty,
+    });
+  }
+
+  for (const skill of missingSkills) {
+    if (!skill.next_task_id) continue;
+    if (usedTaskIds.has(skill.next_task_id)) continue;
+
+    const title = `Pelajari ${skill.skill_name}`;
+    const lowerTitle = title.toLowerCase();
+
+    if (usedTitles.has(lowerTitle)) continue;
+
+    usedTaskIds.add(skill.next_task_id);
+    usedTitles.add(lowerTitle);
+
+    normalizedTasks.push({
+      task_id: skill.next_task_id,
+      task_title: title,
+      task_description:
+        skill.reason ||
+        `Latihan untuk memperkuat skill ${skill.skill_name}.`,
+      output_format:
+        "File project, screenshot, link, atau catatan pengerjaan.",
+      difficulty: "basic",
+    });
+  }
+
+  if (normalizedTasks.length) {
+    return normalizedTasks;
+  }
+
+  return fallbackTaskTitles.map((title) => ({
+    task_title: title,
+    task_description: "Task dibuat otomatis dari hasil assessment user.",
+    output_format:
+      "Catatan belajar, screenshot, link project, file project, atau dokumen pendukung.",
+    difficulty: "basic",
+  }));
+};
+
+const saveActionPlanTasks = async (
+  tx: Prisma.TransactionClient,
+  params: {
+    actionPlanId: string;
+    role: string;
+    tasks: NormalizedActionTask[];
+  }
+) => {
+  const { actionPlanId, role, tasks } = params;
+
+  for (let index = 0; index < tasks.length; index++) {
+    const aiTask = tasks[index];
+
+    let task = await tx.tasks.findFirst({
+      where: {
+        title: aiTask.task_title,
+        role,
+      },
+    });
+
+    if (task) {
+      task = await tx.tasks.update({
+        where: {
+          id: task.id,
+        },
+        data: {
+          description: aiTask.task_description || task.description,
+          expected_output: aiTask.output_format || task.expected_output,
+          difficulty: normalizeDifficulty(aiTask.difficulty),
+          ai_task_id: aiTask.task_id || task.ai_task_id,
+        },
+      });
+    } else {
+      task = await tx.tasks.create({
+        data: {
+          role,
+          title: aiTask.task_title,
+          description:
+            aiTask.task_description ||
+            "Task dibuat otomatis dari rekomendasi AI.",
+          expected_output:
+            aiTask.output_format ||
+            "File project, screenshot, link, atau catatan pengerjaan.",
+          difficulty: normalizeDifficulty(aiTask.difficulty),
+          ai_task_id: aiTask.task_id || null,
+        },
+      });
+    }
+
+    await tx.action_plan_steps.create({
+      data: {
+        action_plan_id: actionPlanId,
+        task_id: task.id,
+        step_order: index + 1,
+        is_completed: false,
+      },
+    });
   }
 };
 
@@ -309,6 +459,11 @@ export class AssessmentService {
       );
 
       const result = convertAiResultToLegacyResult(data.targetRole, aiResult);
+      const role = result.analysis.role || normalizeRoleToAi(data.targetRole);
+      const normalizedTasks = buildTasksFromAiResult(
+        aiResult,
+        result.recommendedTasks
+      );
 
       const savedResult = await prisma.$transaction(
         async (tx: Prisma.TransactionClient) => {
@@ -323,8 +478,7 @@ export class AssessmentService {
           const context = await tx.user_context.create({
             data: {
               user_id: userId,
-              target_role:
-                result.analysis.role || normalizeRoleToAi(data.targetRole),
+              target_role: role,
               problem_category:
                 result.analysis.problemCategory || "skill_gap",
               confidence_score: result.analysis.confidence,
@@ -332,128 +486,45 @@ export class AssessmentService {
             },
           });
 
+          await tx.action_plans.updateMany({
+            where: {
+              user_id: userId,
+              status: "active",
+            },
+            data: {
+              status: "archived",
+            },
+          });
+
           const actionPlan = await tx.action_plans.create({
             data: {
               user_id: userId,
               generated_from_context_id: context.id,
-              target_role:
-                result.analysis.role || normalizeRoleToAi(data.targetRole),
+              target_role: role,
               title: `Action Plan ${normalizeRoleLabel(data.targetRole)}`,
               status: "active",
             },
           });
 
-          const recommendedTasks =
-            aiResult.action_plan?.recommended_tasks || [];
-
-          if (recommendedTasks.length) {
-            for (let index = 0; index < recommendedTasks.length; index++) {
-              const aiTask = recommendedTasks[index];
-
-              let task = await tx.tasks.findFirst({
-                where: {
-                  title: aiTask.task_title,
-                  role: result.analysis.role || normalizeRoleToAi(data.targetRole),
-                },
-              });
-
-              if (task) {
-                task = await tx.tasks.update({
-                  where: {
-                    id: task.id,
-                  },
-                  data: {
-                    description:
-                      aiTask.task_description || task.description,
-                    expected_output:
-                      aiTask.output_format ||
-                      aiTask.assessment_checklist ||
-                      task.expected_output,
-                    difficulty:
-                      aiTask.difficulty === "advanced"
-                        ? "advanced"
-                        : aiTask.difficulty === "intermediate"
-                        ? "intermediate"
-                        : "basic",
-                    ai_task_id: aiTask.task_id,
-                  },
-                });
-              } else {
-                task = await tx.tasks.create({
-                  data: {
-                    role:
-                      result.analysis.role || normalizeRoleToAi(data.targetRole),
-                    title: aiTask.task_title,
-                    description:
-                      aiTask.task_description ||
-                      "Task dibuat otomatis dari rekomendasi AI.",
-                    expected_output:
-                      aiTask.output_format ||
-                      aiTask.assessment_checklist ||
-                      "File project, screenshot, link, atau catatan pengerjaan.",
-                    difficulty:
-                      aiTask.difficulty === "advanced"
-                        ? "advanced"
-                        : aiTask.difficulty === "intermediate"
-                        ? "intermediate"
-                        : "basic",
-                    ai_task_id: aiTask.task_id,
-                  },
-                });
-              }
-
-              await tx.action_plan_steps.create({
-                data: {
-                  action_plan_id: actionPlan.id,
-                  task_id: task.id,
-                  step_order: index + 1,
-                  is_completed: false,
-                },
-              });
-            }
-          } else {
-            for (let index = 0; index < result.recommendedTasks.length; index++) {
-              const taskTitle = result.recommendedTasks[index];
-
-              const task = await tx.tasks.create({
-                data: {
-                  role:
-                    result.analysis.role || normalizeRoleToAi(data.targetRole),
-                  title: taskTitle,
-                  description:
-                    "Task dibuat otomatis dari hasil assessment user.",
-                  expected_output:
-                    "Catatan belajar, screenshot, link project, file project, atau dokumen pendukung.",
-                  difficulty: "basic",
-                },
-              });
-
-              await tx.action_plan_steps.create({
-                data: {
-                  action_plan_id: actionPlan.id,
-                  task_id: task.id,
-                  step_order: index + 1,
-                  is_completed: false,
-                },
-              });
-            }
-          }
+          await saveActionPlanTasks(tx, {
+            actionPlanId: actionPlan.id,
+            role,
+            tasks: normalizedTasks,
+          });
 
           await tx.progress.upsert({
             where: {
               user_id: userId,
             },
             update: {
-              total_tasks:
-                recommendedTasks.length || result.recommendedTasks.length || 0,
+              total_tasks: normalizedTasks.length,
               completed_tasks: 0,
               progress_percentage: 0,
               last_updated: new Date(),
             },
             create: {
               user_id: userId,
-              total_tasks:
-                recommendedTasks.length || result.recommendedTasks.length || 0,
+              total_tasks: normalizedTasks.length,
               completed_tasks: 0,
               progress_percentage: 0,
             },
@@ -486,6 +557,7 @@ export class AssessmentService {
       console.error("AI assessment save failed, using fallback:", error);
 
       const result = generateLocalFallbackResult(data.targetRole);
+      const role = result.analysis.role || normalizeRoleToAi(data.targetRole);
 
       await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         await tx.assessments.createMany({
@@ -496,13 +568,65 @@ export class AssessmentService {
           })),
         });
 
-        await tx.user_context.create({
+        const context = await tx.user_context.create({
           data: {
             user_id: userId,
-            target_role: data.targetRole,
+            target_role: role,
             problem_category: "skill_gap",
             confidence_score: result.analysis.confidence,
             extracted_keywords: JSON.stringify(result.skillGap),
+          },
+        });
+
+        await tx.action_plans.updateMany({
+          where: {
+            user_id: userId,
+            status: "active",
+          },
+          data: {
+            status: "archived",
+          },
+        });
+
+        const actionPlan = await tx.action_plans.create({
+          data: {
+            user_id: userId,
+            generated_from_context_id: context.id,
+            target_role: role,
+            title: `Action Plan ${normalizeRoleLabel(data.targetRole)}`,
+            status: "active",
+          },
+        });
+
+        const fallbackTasks = result.recommendedTasks.map((title) => ({
+          task_title: title,
+          task_description: "Task dibuat otomatis dari hasil assessment user.",
+          output_format:
+            "Catatan belajar, screenshot, link project, file project, atau dokumen pendukung.",
+          difficulty: "basic",
+        }));
+
+        await saveActionPlanTasks(tx, {
+          actionPlanId: actionPlan.id,
+          role,
+          tasks: fallbackTasks,
+        });
+
+        await tx.progress.upsert({
+          where: {
+            user_id: userId,
+          },
+          update: {
+            total_tasks: fallbackTasks.length,
+            completed_tasks: 0,
+            progress_percentage: 0,
+            last_updated: new Date(),
+          },
+          create: {
+            user_id: userId,
+            total_tasks: fallbackTasks.length,
+            completed_tasks: 0,
+            progress_percentage: 0,
           },
         });
 
